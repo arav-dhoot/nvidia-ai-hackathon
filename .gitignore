@@ -1,0 +1,8 @@
+docker-images.tar
+model_manifest.yaml
+._docker-images.tar
+__pycache__/
+.venv/
+venv/
+hf-models/
+yolov8x.pt
