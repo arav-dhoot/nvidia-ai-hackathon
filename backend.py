@@ -1,18 +1,16 @@
-import json
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+import os
+from openai import OpenAI
 
-# --- SETUP MODEL ---
-# Make sure your Docker command uses "--served-model-name deepseek-reasoner"
-llm = ChatOpenAI(
-    base_url="http://localhost:8000/v1",
-    api_key="EMPTY",
-    model="deepseek-reasoner", 
-    temperature=0.1
-)
+# --- CONFIGURATION ---
+# Point to the local vLLM server
+VLLM_API_URL = "http://localhost:8000/v1"
+MODEL_NAME = "deepseek-reasoner"
+API_KEY = "EMPTY" 
 
-# --- TOOLS ---
+# Initialize OpenAI Client pointing to local vLLM
+client = OpenAI(base_url=VLLM_API_URL, api_key=API_KEY)
+
+# --- EXPANDED SQUAD ROSTER ---
 SQUADS = {
     "Alpha": {"status": "Idle", "type": "Ground", "loc": "Base", "capacity": 10, "equipment": ["Rations", "Medical Kit"]},
     "Bravo": {"status": "Idle", "type": "Aerial", "loc": "Base", "capacity": 5, "equipment": ["Surveillance Drone", "Radio"]},
@@ -24,66 +22,104 @@ SQUADS = {
     "Hotel": {"status": "Busy", "type": "Firefighting", "loc": "Sector 3", "capacity": 10, "equipment": ["Hose", "Extinguisher"]}
 }
 
-@tool
-def get_all_squad_status():
-    """Returns a list of all squads, their status, type, and location."""
-    return str(SQUADS)
+# --- COMMANDER PERSONALITY & LOGIC ---
+SYSTEM_PROMPT = """
+You are AeroGuard Commander, an autonomous AI responsible for disaster response logistics.
+Your goal is to analyze visual hazard reports and deploy the *most specialized* available squad.
 
-@tool
-def deploy_squad(squad_name: str, sector: str):
-    """Deploys a squad to a sector. Fails if squad is Busy."""
-    if squad_name not in SQUADS:
-        return f"Error: {squad_name} does not exist."
-    if SQUADS[squad_name]['status'] == "Busy":
-        return f"FAILURE: {squad_name} is busy at {SQUADS[squad_name]['loc']}."
-    SQUADS[squad_name]['status'] = "Busy"
-    SQUADS[squad_name]['loc'] = sector
-    return f"SUCCESS: {squad_name} deployed to {sector}."
+CURRENT ASSETS & SPECIALTIES:
+- Alpha (Ground): General infantry, light medical. Good for clears roads.
+- Bravo (Aerial): Fast recon drone swarm. Best for assessing large fires or floods from above.
+- Charlie (Medical): *CURRENTLY BUSY at Sector 9*. specialized in triage.
+- Delta (Engineering): Bridge repair, power generation, rubble clearing.
+- Echo (Rescue): Swift water rescue, high-angle rescue. Carries Lifeboats. BEST FOR FLOODS.
+- Foxtrot (Logistics): Heavy transport (fuel/food).
+- Golf (Recon): Light scouts.
+- Hotel (Firefighting): *CURRENTLY BUSY at Sector 3*. Specialized in fire suppression.
 
-@tool
-def check_route_hazard(sector: str):
-    """Checks if the route to a sector is blocked by flood or debris."""
-    if "Sector 4" in sector:
-        return "CRITICAL: Route to Sector 4 is BLOCKED by floodwaters."
-    return "Route is Clear."
+RULES OF ENGAGEMENT:
+1. **Analyze the Hazard:**
+   - If FLOOD detected -> Deploy **Echo** (Lifeboats) or **Bravo** (Aerial view).
+   - If FIRE detected -> Deploy **Hotel** (if free) or **Bravo** (Aerial).
+   - If RUBBLE/BLOCKED ROAD -> Deploy **Delta** (Engineering) to clear it.
+   - If ROAD CLEAR -> Deploy **Alpha** or **Foxtrot** to secure the route.
 
-tools = [get_all_squad_status, deploy_squad, check_route_hazard]
-tools_map = {t.name: t for t in tools}
+2. **Check Status:**
+   - Do NOT redeploy squads marked "Busy" unless the new threat is Catastrophic (Severity: CRITICAL).
+   - Prioritize "Idle" squads.
 
-# --- AGENT LOOP ---
-def run_commander(drone_observation):
-    llm_with_tools = llm.bind_tools(tools, tool_choice="auto")
-    
-    messages = [
-        SystemMessage(content=(
-            "You are the AeroGuard Incident Commander. "
-            "Your goal is to save lives. "
-            "1. Check hazards before deploying Ground teams. "
-            "2. Use Aerial teams (Bravo) if roads are blocked. "
-            "3. Be concise."
-        )),
-        HumanMessage(content=f"Drone Observation: {drone_observation}")
-    ]
-    
-    # Pass 1
-    ai_msg = llm_with_tools.invoke(messages)
-    messages.append(ai_msg)
+3. **Output Format (STRICT):**
+   - You must reason internally about which squad has the right equipment.
+   - Your FINAL output line must be a single command in this format:
+     "Deploy [Squad Name] to [Location]"
+     or
+     "Hold all squads at Base"
+   
+   Examples:
+   "Deploy Echo to Sector 4"
+   "Deploy Delta to Sector 4"
+   "Hold all squads at Base"
+"""
 
-    # Tool Execution Loop
-    if ai_msg.tool_calls:
-        for tool_call in ai_msg.tool_calls:
-            selected_tool = tools_map[tool_call["name"]]
-            tool_output = selected_tool.invoke(tool_call["args"])
-            messages.append(ToolMessage(tool_output, tool_call_id=tool_call["id"]))
-            
-        # Pass 2 (Final Answer)
-        final_response = llm_with_tools.invoke(messages)
-        content = final_response.content
-    else:
-        content = ai_msg.content
+def stream_commander(observation_text):
+    """
+    Streams response from DeepSeek, yielding thoughts (CoT) and final commands.
+    """
+    try:
+        # Build a dynamic status report string to feed the LLM
+        squad_status_str = "\n".join([f"- {name}: {data['status']} ({data['type']})" for name, data in SQUADS.items()])
 
-    # Clean up DeepSeek thinking tags if present
-    if "</think>" in content:
-        content = content.split("</think>")[-1].strip()
+        stream = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"INCOMING VISUAL REPORT: {observation_text}\n\nCURRENT SQUAD STATUS:\n{squad_status_str}\n\nYOUR COMMAND:"}
+            ],
+            max_tokens=512,
+            temperature=0.1,
+            stream=True 
+        )
+
+        reasoning_content = ""
+        final_content = ""
+
+        for chunk in stream:
+            # 1. Capture "Thinking" (Reasoning)
+            if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'reasoning_content'):
+                 r_chunk = chunk.choices[0].delta.reasoning_content
+                 if r_chunk:
+                     reasoning_content += r_chunk
+                     yield {"type": "thinking", "content": r_chunk}
+
+            # 2. Capture Final Answer (Command)
+            if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content'):
+                f_chunk = chunk.choices[0].delta.content
+                if f_chunk:
+                    final_content += f_chunk
+                    yield {"type": "answer", "content": f_chunk}
         
-    return content
+        # --- EXECUTE STATE UPDATE ---
+        # Parse the final string to actually move the squad in Python memory
+        command_str = final_content.strip()
+        
+        if "Deploy" in command_str:
+            # Expected format: "Deploy [Name] to [Location]"
+            try:
+                parts = command_str.split(" to ")
+                squad_name = parts[0].replace("Deploy ", "").strip()
+                location = parts[1].strip()
+                
+                # Update the Global Dict
+                if squad_name in SQUADS:
+                    SQUADS[squad_name]["status"] = "Deployed"
+                    SQUADS[squad_name]["loc"] = location
+            except:
+                pass # If LLM outputs weird text, just skip state update
+
+        elif "Hold" in command_str:
+             # Reset non-busy squads to Base? Or just do nothing?
+             # Let's just log it.
+             pass
+
+    except Exception as e:
+        yield {"type": "error", "content": f"Connection Error: {str(e)}"}
