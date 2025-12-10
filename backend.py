@@ -14,9 +14,14 @@ llm = ChatOpenAI(
 
 # --- TOOLS ---
 SQUADS = {
-    "Alpha": {"status": "Idle", "type": "Ground", "loc": "Base"},
-    "Bravo": {"status": "Idle", "type": "Aerial", "loc": "Base"},
-    "Charlie": {"status": "Busy",  "type": "Medical", "loc": "Sector 9"}
+    "Alpha": {"status": "Idle", "type": "Ground", "loc": "Base", "capacity": 10, "equipment": ["Rations", "Medical Kit"]},
+    "Bravo": {"status": "Idle", "type": "Aerial", "loc": "Base", "capacity": 5, "equipment": ["Surveillance Drone", "Radio"]},
+    "Charlie": {"status": "Busy",  "type": "Medical", "loc": "Sector 9", "capacity": 8, "equipment": ["Stretcher", "First Aid"]},
+    "Delta": {"status": "Idle", "type": "Engineering", "loc": "Base", "capacity": 6, "equipment": ["Toolbox", "Generator"]},
+    "Echo": {"status": "Idle", "type": "Rescue", "loc": "Base", "capacity": 12, "equipment": ["Ropes", "Lifeboat"]},
+    "Foxtrot": {"status": "Idle", "type": "Logistics", "loc": "Base", "capacity": 15, "equipment": ["Supplies", "Fuel"]},
+    "Golf": {"status": "Idle", "type": "Recon", "loc": "Base", "capacity": 4, "equipment": ["Binoculars", "Map"]},
+    "Hotel": {"status": "Busy", "type": "Firefighting", "loc": "Sector 3", "capacity": 10, "equipment": ["Hose", "Extinguisher"]}
 }
 
 @tool
