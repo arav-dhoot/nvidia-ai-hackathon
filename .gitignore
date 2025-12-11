@@ -9,3 +9,4 @@ yolov8x.pt
 sam_files/
 sam2_hiera_l.yaml
 sam2_hiera_large.pt
+images/
